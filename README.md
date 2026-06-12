@@ -48,7 +48,10 @@ pmgs report --input observation.json --output report.html
 ```
 
 Capture and decoder commands default to dry-run output. Add `--execute` only
-after inspecting the command PMGS prints.
+after inspecting the command PMGS prints. Capture dry runs show the planned
+duration, estimated IQ output size, and metadata sidecar path. Executed captures
+write a `*.pmgs.json` sidecar by default and refuse to overwrite existing IQ
+files unless `--overwrite` is passed.
 
 ## Example Observation JSON
 

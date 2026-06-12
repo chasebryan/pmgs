@@ -42,7 +42,12 @@ class PassCandidate:
         return asdict(self)
 
 
-def read_tle_text(*, group: str = "weather", tle_file: Path | None = None, timeout_seconds: int = 15) -> str:
+def read_tle_text(
+    *,
+    group: str = "weather",
+    tle_file: Path | None = None,
+    timeout_seconds: int = 15,
+) -> str:
     if tle_file is not None:
         return tle_file.read_text(encoding="utf-8")
     if group not in CELESTRAK_GROUPS:
@@ -183,7 +188,9 @@ def format_passes(candidates: list[PassCandidate], *, as_json: bool = False) -> 
         return "No realistic passes matched the current filters."
 
     lines = [
-        "satellite                         tca UTC               elev  verdict                  freq"
+        "satellite                         "
+        "tca UTC               "
+        "elev  verdict                  freq"
     ]
     lines.append("-" * len(lines[0]))
     for candidate in candidates:

@@ -38,7 +38,10 @@ ANTENNAS: dict[str, AntennaProfile] = {
     "stock-whip": AntennaProfile(
         key="stock-whip",
         label="RTL-SDR stock whip",
-        summary="Simple and portable, but less forgiving than the stock dipole for VHF satellite work.",
+        summary=(
+            "Simple and portable, but less forgiving than the stock dipole "
+            "for VHF satellite work."
+        ),
         vhf_steps=(
             "Fully extend the whip for VHF.",
             "Use a magnetic base on a metal surface if your kit includes one.",

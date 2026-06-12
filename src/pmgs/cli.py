@@ -8,7 +8,18 @@ from typing import Sequence
 
 from . import __version__
 from .antenna import ANTENNAS, render_guide
-from .capture import CapturePlan, decoder_command, rtl_sdr_command, run_command, shell_join
+from .capture import (
+    CapturePlan,
+    decoder_command,
+    default_metadata_path,
+    estimated_output_bytes,
+    format_bytes,
+    format_duration,
+    rtl_sdr_command,
+    run_capture,
+    run_command,
+    shell_join,
+)
 from .catalog import format_targets
 from .devices import format_scan, scan_tools
 from .orbits import OrbitDependencyError, format_passes, predict_passes
@@ -37,12 +48,18 @@ def build_parser() -> argparse.ArgumentParser:
     targets.set_defaults(func=_cmd_targets)
 
     passes = subparsers.add_parser("passes", help="show realistic satellite pass candidates")
-    passes.add_argument("--lat", type=float, required=True, help="observer latitude in decimal degrees")
-    passes.add_argument("--lon", type=float, required=True, help="observer longitude in decimal degrees")
+    passes.add_argument(
+        "--lat", type=float, required=True, help="observer latitude in decimal degrees"
+    )
+    passes.add_argument(
+        "--lon", type=float, required=True, help="observer longitude in decimal degrees"
+    )
     passes.add_argument("--hours", type=float, default=12.0, help="planning window length")
     passes.add_argument("--min-elevation", type=float, default=25.0, help="minimum max elevation")
     passes.add_argument("--group", default="weather", choices=["weather", "amateur", "active"])
-    passes.add_argument("--tle-file", type=Path, help="local TLE file instead of downloading CelesTrak data")
+    passes.add_argument(
+        "--tle-file", type=Path, help="local TLE file instead of downloading CelesTrak data"
+    )
     passes.add_argument("--start", help="UTC ISO timestamp for deterministic planning")
     passes.add_argument("--limit", type=int, default=10)
     passes.add_argument("--antenna", choices=sorted(ANTENNAS), default="stock-dipole")
@@ -58,7 +75,17 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument("--gain-db", type=float, default=36.4)
     capture.add_argument("--ppm", type=int)
     capture.add_argument("--device-index", type=int, default=0)
-    capture.add_argument("--execute", action="store_true", help="run rtl_sdr instead of printing a dry run")
+    capture.add_argument("--metadata", type=Path, help="capture metadata JSON path")
+    capture.add_argument("--no-metadata", action="store_true", help="do not write capture metadata")
+    capture.add_argument(
+        "--overwrite", action="store_true", help="allow replacing an existing output file"
+    )
+    capture.add_argument(
+        "--progress-interval", type=int, default=30, help="seconds between progress messages"
+    )
+    capture.add_argument(
+        "--execute", action="store_true", help="run rtl_sdr instead of printing a dry run"
+    )
     capture.set_defaults(func=_cmd_capture)
 
     decode = subparsers.add_parser("decode", help="prepare or run a decoder handoff")
@@ -67,7 +94,9 @@ def build_parser() -> argparse.ArgumentParser:
     decode.add_argument("--input", type=Path, required=True)
     decode.add_argument("--output", type=Path, required=True)
     decode.add_argument("--extra-arg", action="append", default=[])
-    decode.add_argument("--execute", action="store_true", help="run the decoder instead of printing a dry run")
+    decode.add_argument(
+        "--execute", action="store_true", help="run the decoder instead of printing a dry run"
+    )
     decode.set_defaults(func=_cmd_decode)
 
     report = subparsers.add_parser("report", help="generate a local HTML observation report")
@@ -131,12 +160,27 @@ def _cmd_capture(args: argparse.Namespace) -> int:
         device_index=args.device_index,
     )
     command = rtl_sdr_command(plan)
+    metadata_path = (
+        None if args.no_metadata else args.metadata or default_metadata_path(plan.output_path)
+    )
     print(f"Satellite: {plan.satellite}")
+    print(f"Duration: {format_duration(plan.duration_seconds)}")
+    print(f"Estimated IQ output: {format_bytes(estimated_output_bytes(plan))}")
+    if metadata_path is not None:
+        print(f"Metadata: {metadata_path}")
     print(shell_join(command))
     if not args.execute:
+        if plan.output_path.exists() and not args.overwrite:
+            print("Output already exists. --execute would refuse without --overwrite.")
         print("Dry run only. Add --execute to record.")
         return 0
-    return run_command(command)
+    return run_capture(
+        plan=plan,
+        command=command,
+        metadata_path=metadata_path,
+        overwrite=args.overwrite,
+        progress_interval=args.progress_interval,
+    )
 
 
 def _cmd_decode(args: argparse.Namespace) -> int:
@@ -149,7 +193,10 @@ def _cmd_decode(args: argparse.Namespace) -> int:
     )
     print(shell_join(command))
     if not args.execute:
-        print("Dry run only. Verify this template against your decoder version before using --execute.")
+        print(
+            "Dry run only. Verify this template against your decoder version "
+            "before using --execute."
+        )
         return 0
     return run_command(command)
 

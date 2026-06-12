@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import io
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 
 from pmgs import cli
-from pmgs.capture import CapturePlan, rtl_sdr_command
+from pmgs.capture import CapturePlan, estimated_output_bytes, rtl_sdr_command, run_capture
 from pmgs.catalog import get_target, recommend_pass
 
 
@@ -31,6 +33,34 @@ class CliTests(unittest.TestCase):
         )
         self.assertIn("-n", command)
         self.assertEqual(command[command.index("-n") + 1], "10240000")
+
+    def test_capture_estimates_iq_output_size(self) -> None:
+        plan = CapturePlan(
+            satellite="METEOR-M",
+            frequency_mhz=137.9,
+            duration_seconds=10,
+            output_path="meteor.iq",  # type: ignore[arg-type]
+            sample_rate=1_024_000,
+        )
+        self.assertEqual(estimated_output_bytes(plan), 20_480_000)
+
+    def test_run_capture_refuses_existing_output_without_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "capture.iq"
+            output.write_bytes(b"existing")
+            plan = CapturePlan(
+                satellite="METEOR-M",
+                frequency_mhz=137.9,
+                duration_seconds=1,
+                output_path=output,
+            )
+            with self.assertRaisesRegex(ValueError, "already exists"):
+                run_capture(
+                    plan=plan,
+                    command=["echo", "should-not-run"],
+                    metadata_path=None,
+                    overwrite=False,
+                )
 
     def test_recommendation_scores_high_elevation_meteor_pass(self) -> None:
         profile = get_target("meteor-lrpt")

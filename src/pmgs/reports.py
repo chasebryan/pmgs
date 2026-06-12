@@ -98,9 +98,7 @@ def render_html_report(observation: Observation) -> str:
     if not artifact_items:
         artifact_items = "<li>none recorded</li>"
 
-    row_html = "\n".join(
-        f"<tr><th>{html.escape(label)}</th><td>{html.escape(value)}</td></tr>" for label, value in rows
-    )
+    row_html = "\n".join(_table_row(label, value) for label, value in rows)
     title = f"PMGS Report - {observation.satellite}"
     return f"""<!doctype html>
 <html lang="en">
@@ -113,7 +111,12 @@ def render_html_report(observation: Observation) -> str:
     body {{ margin: 2rem; line-height: 1.45; }}
     main {{ max-width: 860px; }}
     table {{ border-collapse: collapse; width: 100%; margin: 1rem 0; }}
-    th, td {{ border-bottom: 1px solid #8884; padding: 0.65rem; text-align: left; vertical-align: top; }}
+    th, td {{
+      border-bottom: 1px solid #8884;
+      padding: 0.65rem;
+      text-align: left;
+      vertical-align: top;
+    }}
     th {{ width: 12rem; }}
     .badge {{ display: inline-block; padding: 0.25rem 0.5rem; border: 1px solid #8886; }}
   </style>
@@ -141,6 +144,10 @@ def _format_bool(value: bool | None) -> str:
     if value is None:
         return "not recorded"
     return "yes" if value else "no"
+
+
+def _table_row(label: str, value: str) -> str:
+    return f"<tr><th>{html.escape(label)}</th><td>{html.escape(value)}</td></tr>"
 
 
 def write_report(observation: Observation, output_path: Path) -> Path:

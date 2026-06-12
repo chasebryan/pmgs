@@ -71,7 +71,10 @@ def _probe_rtl_test(path: str, timeout_seconds: float) -> tuple[str, str]:
 
 def format_scan(checks: list[ToolCheck], *, as_json: bool = False) -> str:
     if as_json:
-        return json.dumps([asdict(check) | {"available": check.available} for check in checks], indent=2)
+        return json.dumps(
+            [asdict(check) | {"available": check.available} for check in checks],
+            indent=2,
+        )
 
     name_width = max(len("tool"), *(len(check.name) for check in checks))
     status_width = len("available")
@@ -80,5 +83,9 @@ def format_scan(checks: list[ToolCheck], *, as_json: bool = False) -> str:
     for check in checks:
         available = "yes" if check.available else "no"
         suffix = f" ({check.probe_status})" if check.probe_status else ""
-        lines.append(f"{check.name:<{name_width}}  {available:<{status_width}}  {check.purpose}{suffix}")
+        lines.append(
+            f"{check.name:<{name_width}}  "
+            f"{available:<{status_width}}  "
+            f"{check.purpose}{suffix}"
+        )
     return "\n".join(lines)

@@ -54,7 +54,10 @@ STARTER_TARGETS: tuple[TargetProfile, ...] = (
         typical_frequency_mhz="varies by satellite",
         min_good_elevation=45.0,
         antenna_hint="stock whip/dipole may hear strong passes, but UHF is less forgiving",
-        notes="Good for experimentation; decoding success depends heavily on satellite and antenna placement.",
+        notes=(
+            "Good for experimentation; decoding success depends heavily on satellite "
+            "and antenna placement."
+        ),
     ),
     TargetProfile(
         key="signal-only",
