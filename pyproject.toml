@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pmgs"
+version = "0.1.0"
+description = "Poor Man's Ground Station: RTL-SDR stock antenna satellite helper"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "GPL-3.0-only"
+authors = [{ name = "PMGS contributors" }]
+keywords = ["rtl-sdr", "satellite", "ground-station", "sdr", "radio"]
+classifiers = [
+  "Development Status :: 2 - Pre-Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Astronomy",
+  "Topic :: Communications :: Ham Radio",
+]
+
+[project.optional-dependencies]
+orbit = ["skyfield>=1.49"]
+dev = ["ruff>=0.6"]
+
+[project.scripts]
+pmgs = "pmgs.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
