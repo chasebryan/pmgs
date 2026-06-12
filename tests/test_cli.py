@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 import io
+import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pmgs import cli
-from pmgs.capture import CapturePlan, estimated_output_bytes, rtl_sdr_command, run_capture
+from pmgs.capture import (
+    CapturePlan,
+    capture_metadata,
+    estimated_output_bytes,
+    rtl_sdr_command,
+    run_capture,
+    verify_capture,
+)
 from pmgs.catalog import get_target, recommend_pass
 
 
@@ -61,6 +70,45 @@ class CliTests(unittest.TestCase):
                     metadata_path=None,
                     overwrite=False,
                 )
+
+    def test_verify_capture_accepts_plausible_iq_with_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            output = root / "capture.iq"
+            output.write_bytes(bytes([0, 255, 64, 192, 128, 127, 192, 64]) * 256)
+            plan = CapturePlan(
+                satellite="METEOR-M",
+                frequency_mhz=137.9,
+                duration_seconds=1,
+                output_path=output,
+                sample_rate=1024,
+            )
+            metadata = capture_metadata(
+                plan=plan,
+                command=rtl_sdr_command(plan),
+                started_at=datetime(2026, 6, 12, tzinfo=timezone.utc),
+                ended_at=datetime(2026, 6, 12, 0, 0, 1, tzinfo=timezone.utc),
+                exit_code=0,
+                actual_output_bytes=output.stat().st_size,
+            )
+            metadata_path = root / "capture.iq.pmgs.json"
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+            result = verify_capture(input_path=output, metadata_path=metadata_path)
+
+            self.assertEqual(result.verdict, "complete")
+            self.assertTrue(result.metadata_found)
+            self.assertEqual(result.sample_rate, 1024)
+
+    def test_verify_capture_flags_flat_iq_as_suspect(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / "flat.iq"
+            output.write_bytes(b"\x80\x80" * 128)
+
+            result = verify_capture(input_path=output, sample_rate=1024)
+
+            self.assertEqual(result.verdict, "suspect")
+            self.assertIn("flat", " ".join(result.notes))
 
     def test_recommendation_scores_high_elevation_meteor_pass(self) -> None:
         profile = get_target("meteor-lrpt")

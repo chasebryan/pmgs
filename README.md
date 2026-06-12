@@ -43,6 +43,7 @@ pmgs scan
 pmgs antenna stock-dipole --band vhf
 pmgs passes --lat 41.8781 --lon -87.6298 --hours 12 --min-elevation 25
 pmgs capture --satellite METEOR-M --frequency-mhz 137.9 --duration 600 --output meteor.iq
+pmgs verify --input meteor.iq
 pmgs decode --decoder satdump --pipeline meteor-lrpt --input meteor.iq --output decoded/
 pmgs report --input observation.json --output report.html
 ```
@@ -52,6 +53,62 @@ after inspecting the command PMGS prints. Capture dry runs show the planned
 duration, estimated IQ output size, and metadata sidecar path. Executed captures
 write a `*.pmgs.json` sidecar by default and refuse to overwrite existing IQ
 files unless `--overwrite` is passed.
+
+## Basic Field Workflow
+
+1. Confirm your tools and hardware are visible:
+
+```bash
+pmgs scan --probe
+```
+
+2. Set up the stock antenna for the band:
+
+```bash
+pmgs antenna stock-dipole --band vhf
+```
+
+3. Scan for realistic satellite passes:
+
+```bash
+pmgs passes --lat 41.8781 --lon -87.6298 --hours 12 --min-elevation 25
+```
+
+4. Dry-run the capture first. PMGS will show the exact `rtl_sdr` command,
+   duration, expected IQ size, and metadata sidecar path:
+
+```bash
+pmgs capture \
+  --satellite METEOR-M2-4 \
+  --frequency-mhz 137.9 \
+  --duration 600 \
+  --output captures/meteor-m2-4.iq
+```
+
+5. If the dry run looks right, execute the capture:
+
+```bash
+pmgs capture \
+  --satellite METEOR-M2-4 \
+  --frequency-mhz 137.9 \
+  --duration 600 \
+  --output captures/meteor-m2-4.iq \
+  --execute
+```
+
+6. Verify the capture before decoding:
+
+```bash
+pmgs verify --input captures/meteor-m2-4.iq
+```
+
+Verification checks the file size, sample count, PMGS metadata sidecar, estimated
+duration, and a sampled slice of the unsigned 8-bit I/Q byte stream. A missing
+metadata sidecar can still be inspected with an explicit sample rate:
+
+```bash
+pmgs verify --input meteor.iq --sample-rate 1024000
+```
 
 ## Example Observation JSON
 

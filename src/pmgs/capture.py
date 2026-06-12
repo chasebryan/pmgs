@@ -4,7 +4,7 @@ import json
 import shlex
 import subprocess
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -23,6 +23,37 @@ class CapturePlan:
     gain_db: float | None = 36.4
     ppm: int | None = None
     device_index: int = 0
+
+
+@dataclass(frozen=True)
+class IQStats:
+    sampled_complex_samples: int
+    byte_min: int
+    byte_max: int
+    i_mean: float
+    q_mean: float
+    i_stddev: float
+    q_stddev: float
+
+
+@dataclass(frozen=True)
+class CaptureVerification:
+    input_path: Path
+    file_bytes: int
+    complex_samples: int
+    metadata_path: Path | None = None
+    metadata_found: bool = False
+    sample_rate: int | None = None
+    expected_bytes: int | None = None
+    duration_seconds: float | None = None
+    size_ratio: float | None = None
+    iq_stats: IQStats | None = None
+    verdict: str = "suspect"
+    notes: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def ok(self) -> bool:
+        return self.verdict in {"complete", "partial"}
 
 
 def sample_count(plan: CapturePlan) -> int:
@@ -86,6 +117,14 @@ def default_metadata_path(output_path: Path) -> Path:
     return output_path.with_suffix(output_path.suffix + ".pmgs.json")
 
 
+def load_capture_metadata(metadata_path: Path) -> dict[str, Any]:
+    with metadata_path.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    if not isinstance(data, dict):
+        raise ValueError("capture metadata must be a JSON object")
+    return data
+
+
 def run_capture(
     *,
     plan: CapturePlan,
@@ -124,6 +163,264 @@ def run_capture(
         )
         metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
     return exit_code
+
+
+def verify_capture(
+    *,
+    input_path: Path,
+    metadata_path: Path | None = None,
+    sample_rate: int | None = None,
+    expected_bytes: int | None = None,
+    max_sample_bytes: int = 1_048_576,
+) -> CaptureVerification:
+    if not input_path.exists():
+        raise ValueError(f"capture file does not exist: {input_path}")
+
+    metadata = None
+    metadata_found = False
+    resolved_metadata_path = metadata_path
+    if resolved_metadata_path is None:
+        candidate = default_metadata_path(input_path)
+        resolved_metadata_path = candidate if candidate.exists() else None
+    if resolved_metadata_path is not None and resolved_metadata_path.exists():
+        metadata = load_capture_metadata(resolved_metadata_path)
+        metadata_found = True
+
+    metadata_sample_rate = _metadata_int(metadata, "sample_rate")
+    metadata_expected_bytes = _metadata_int(metadata, "estimated_output_bytes")
+    chosen_sample_rate = sample_rate or metadata_sample_rate
+    chosen_expected_bytes = expected_bytes or metadata_expected_bytes
+
+    file_bytes = input_path.stat().st_size
+    complex_samples = file_bytes // RTL_SDR_BYTES_PER_COMPLEX_SAMPLE
+    duration_seconds = None
+    if chosen_sample_rate:
+        duration_seconds = complex_samples / chosen_sample_rate
+
+    size_ratio = None
+    if chosen_expected_bytes:
+        size_ratio = file_bytes / chosen_expected_bytes
+
+    notes: list[str] = []
+    if file_bytes == 0:
+        notes.append("capture file is empty")
+    if file_bytes % RTL_SDR_BYTES_PER_COMPLEX_SAMPLE:
+        notes.append("capture byte count is odd; RTL-SDR IQ data should be I/Q byte pairs")
+    if not metadata_found:
+        notes.append("no PMGS metadata sidecar found; pass --metadata if this capture has one")
+    if chosen_sample_rate is None:
+        notes.append("sample rate is unknown; pass --sample-rate for a duration estimate")
+    if chosen_expected_bytes is None:
+        notes.append("expected size is unknown; pass --expected-bytes or use PMGS metadata")
+
+    iq_stats = _sample_iq_stats(input_path, max_sample_bytes=max_sample_bytes)
+    if iq_stats is None:
+        notes.append("not enough IQ data to inspect")
+    else:
+        if iq_stats.byte_min == iq_stats.byte_max:
+            notes.append("IQ bytes are flat; this does not look like a useful capture")
+        if iq_stats.i_stddev < 1.0 and iq_stats.q_stddev < 1.0:
+            notes.append("I/Q variation is extremely low; capture may be blank or stuck")
+
+    verdict = _verification_verdict(
+        file_bytes=file_bytes,
+        expected_bytes=chosen_expected_bytes,
+        iq_stats=iq_stats,
+        notes=notes,
+    )
+    return CaptureVerification(
+        input_path=input_path,
+        file_bytes=file_bytes,
+        complex_samples=complex_samples,
+        metadata_path=resolved_metadata_path,
+        metadata_found=metadata_found,
+        sample_rate=chosen_sample_rate,
+        expected_bytes=chosen_expected_bytes,
+        duration_seconds=duration_seconds,
+        size_ratio=size_ratio,
+        iq_stats=iq_stats,
+        verdict=verdict,
+        notes=tuple(notes),
+    )
+
+
+def format_verification(result: CaptureVerification, *, as_json: bool = False) -> str:
+    if as_json:
+        return json.dumps(_verification_to_dict(result), indent=2)
+
+    lines = [
+        "PMGS Capture Verification",
+        "=========================",
+        f"File: {result.input_path}",
+        f"Size: {format_bytes(result.file_bytes)}",
+        f"Complex samples: {result.complex_samples:,}",
+        f"Metadata: {_metadata_label(result)}",
+    ]
+    if result.sample_rate:
+        lines.append(f"Sample rate: {result.sample_rate:,} S/s")
+    if result.duration_seconds is not None:
+        lines.append(f"Estimated duration: {format_duration(round(result.duration_seconds))}")
+    if result.expected_bytes is not None:
+        lines.append(f"Expected size: {format_bytes(result.expected_bytes)}")
+    if result.size_ratio is not None:
+        lines.append(f"Size ratio: {result.size_ratio:.1%}")
+    if result.iq_stats is not None:
+        stats = result.iq_stats
+        lines.extend(
+            [
+                "",
+                "IQ byte health:",
+                f"  Sampled pairs: {stats.sampled_complex_samples:,}",
+                f"  Byte range: {stats.byte_min}..{stats.byte_max}",
+                f"  I mean/stddev: {stats.i_mean:.2f} / {stats.i_stddev:.2f}",
+                f"  Q mean/stddev: {stats.q_mean:.2f} / {stats.q_stddev:.2f}",
+            ]
+        )
+    lines.extend(["", f"Verdict: {result.verdict}"])
+    if result.notes:
+        lines.append("Notes:")
+        lines.extend(f"- {note}" for note in result.notes)
+    return "\n".join(lines)
+
+
+def _verification_to_dict(result: CaptureVerification) -> dict[str, object]:
+    return {
+        "input_path": str(result.input_path),
+        "file_bytes": result.file_bytes,
+        "complex_samples": result.complex_samples,
+        "metadata_path": None if result.metadata_path is None else str(result.metadata_path),
+        "metadata_found": result.metadata_found,
+        "sample_rate": result.sample_rate,
+        "expected_bytes": result.expected_bytes,
+        "duration_seconds": result.duration_seconds,
+        "size_ratio": result.size_ratio,
+        "iq_stats": None if result.iq_stats is None else result.iq_stats.__dict__,
+        "verdict": result.verdict,
+        "notes": list(result.notes),
+    }
+
+
+def _metadata_label(result: CaptureVerification) -> str:
+    if result.metadata_found and result.metadata_path is not None:
+        return f"found at {result.metadata_path}"
+    if result.metadata_path is not None:
+        return f"missing at {result.metadata_path}"
+    return "not found"
+
+
+def _metadata_int(metadata: dict[str, Any] | None, key: str) -> int | None:
+    if metadata is None or metadata.get(key) is None:
+        return None
+    try:
+        return int(metadata[key])
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"metadata field {key!r} must be an integer") from exc
+
+
+def _sample_iq_stats(input_path: Path, *, max_sample_bytes: int) -> IQStats | None:
+    file_bytes = input_path.stat().st_size
+    if file_bytes < RTL_SDR_BYTES_PER_COMPLEX_SAMPLE:
+        return None
+
+    chunk_size = max(RTL_SDR_BYTES_PER_COMPLEX_SAMPLE, max_sample_bytes // 8)
+    chunk_size -= chunk_size % RTL_SDR_BYTES_PER_COMPLEX_SAMPLE
+    chunk_size = max(RTL_SDR_BYTES_PER_COMPLEX_SAMPLE, chunk_size)
+    offsets = _sample_offsets(file_bytes=file_bytes, chunk_size=chunk_size)
+
+    stats = _RunningIQStats()
+    with input_path.open("rb") as handle:
+        for offset in offsets:
+            aligned_offset = offset - (offset % RTL_SDR_BYTES_PER_COMPLEX_SAMPLE)
+            handle.seek(aligned_offset)
+            chunk = handle.read(chunk_size)
+            if len(chunk) % RTL_SDR_BYTES_PER_COMPLEX_SAMPLE:
+                chunk = chunk[:-1]
+            stats.update(chunk)
+    return stats.finish()
+
+
+def _sample_offsets(*, file_bytes: int, chunk_size: int) -> list[int]:
+    if file_bytes <= chunk_size:
+        return [0]
+    max_offset = max(0, file_bytes - chunk_size)
+    return sorted({round(max_offset * index / 7) for index in range(8)})
+
+
+class _RunningIQStats:
+    def __init__(self) -> None:
+        self.count = 0
+        self.byte_min = 255
+        self.byte_max = 0
+        self.i_mean = 0.0
+        self.q_mean = 0.0
+        self.i_m2 = 0.0
+        self.q_m2 = 0.0
+
+    def update(self, chunk: bytes) -> None:
+        for index in range(0, len(chunk), RTL_SDR_BYTES_PER_COMPLEX_SAMPLE):
+            i_value = chunk[index]
+            q_value = chunk[index + 1]
+            self.byte_min = min(self.byte_min, i_value, q_value)
+            self.byte_max = max(self.byte_max, i_value, q_value)
+            self.count += 1
+            self.i_mean, self.i_m2 = _welford_step(
+                value=i_value,
+                count=self.count,
+                mean=self.i_mean,
+                m2=self.i_m2,
+            )
+            self.q_mean, self.q_m2 = _welford_step(
+                value=q_value,
+                count=self.count,
+                mean=self.q_mean,
+                m2=self.q_m2,
+            )
+
+    def finish(self) -> IQStats | None:
+        if self.count == 0:
+            return None
+        i_variance = self.i_m2 / (self.count - 1) if self.count > 1 else 0.0
+        q_variance = self.q_m2 / (self.count - 1) if self.count > 1 else 0.0
+        return IQStats(
+            sampled_complex_samples=self.count,
+            byte_min=self.byte_min,
+            byte_max=self.byte_max,
+            i_mean=self.i_mean,
+            q_mean=self.q_mean,
+            i_stddev=i_variance**0.5,
+            q_stddev=q_variance**0.5,
+        )
+
+
+def _welford_step(*, value: int, count: int, mean: float, m2: float) -> tuple[float, float]:
+    delta = value - mean
+    mean += delta / count
+    delta_after = value - mean
+    m2 += delta * delta_after
+    return mean, m2
+
+
+def _verification_verdict(
+    *,
+    file_bytes: int,
+    expected_bytes: int | None,
+    iq_stats: IQStats | None,
+    notes: list[str],
+) -> str:
+    if file_bytes == 0 or iq_stats is None:
+        return "suspect"
+    if iq_stats.byte_min == iq_stats.byte_max:
+        return "suspect"
+    if iq_stats.i_stddev < 1.0 and iq_stats.q_stddev < 1.0:
+        return "suspect"
+    if expected_bytes is None:
+        return "partial"
+    tolerance = max(RTL_SDR_BYTES_PER_COMPLEX_SAMPLE, round(expected_bytes * 0.01))
+    if file_bytes + tolerance < expected_bytes:
+        return "partial"
+    if file_bytes > expected_bytes + tolerance:
+        notes.append("capture is larger than expected; check sample rate/duration assumptions")
+    return "complete"
 
 
 def _wait_with_progress(

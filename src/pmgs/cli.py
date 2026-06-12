@@ -15,10 +15,12 @@ from .capture import (
     estimated_output_bytes,
     format_bytes,
     format_duration,
+    format_verification,
     rtl_sdr_command,
     run_capture,
     run_command,
     shell_join,
+    verify_capture,
 )
 from .catalog import format_targets
 from .devices import format_scan, scan_tools
@@ -87,6 +89,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--execute", action="store_true", help="run rtl_sdr instead of printing a dry run"
     )
     capture.set_defaults(func=_cmd_capture)
+
+    verify = subparsers.add_parser("verify", help="verify an IQ capture file")
+    verify.add_argument("--input", type=Path, required=True, help="IQ capture file")
+    verify.add_argument("--metadata", type=Path, help="PMGS capture metadata JSON")
+    verify.add_argument("--sample-rate", type=int, help="sample rate in samples per second")
+    verify.add_argument("--expected-bytes", type=int, help="expected IQ byte count")
+    verify.add_argument(
+        "--require-complete",
+        action="store_true",
+        help="exit non-zero unless the capture matches the expected size",
+    )
+    verify.add_argument("--json", action="store_true", help="print machine-readable output")
+    verify.set_defaults(func=_cmd_verify)
 
     decode = subparsers.add_parser("decode", help="prepare or run a decoder handoff")
     decode.add_argument("--decoder", choices=["satdump", "gr-satellites"], required=True)
@@ -199,6 +214,19 @@ def _cmd_decode(args: argparse.Namespace) -> int:
         )
         return 0
     return run_command(command)
+
+
+def _cmd_verify(args: argparse.Namespace) -> int:
+    result = verify_capture(
+        input_path=args.input,
+        metadata_path=args.metadata,
+        sample_rate=args.sample_rate,
+        expected_bytes=args.expected_bytes,
+    )
+    print(format_verification(result, as_json=args.json))
+    if args.require_complete and result.verdict != "complete":
+        return 1
+    return 0 if result.ok else 1
 
 
 def _cmd_report(args: argparse.Namespace) -> int:
